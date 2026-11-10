@@ -12,7 +12,7 @@ data "aws_instances" "database" {
   instance_state_names = ["running"]
 
   filter {
-    name = "tag:aws:autoscaling:groupName"
+    name   = "tag:aws:autoscaling:groupName"
     values = [aws_autoscaling_group.database.name]
   }
   depends_on = [aws_autoscaling_group.database]
@@ -20,5 +20,5 @@ data "aws_instances" "database" {
 
 output "database_public_ips" {
   description = "Public IP addresses of running database ASG instances"
-  value = data.aws_instances.database.public_ips
+  value       = data.aws_instances.database.public_ips
 }

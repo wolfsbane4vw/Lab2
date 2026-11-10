@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 key_path="$project_dir/terraform/database-key.pem"
 
 node_ips="$(
