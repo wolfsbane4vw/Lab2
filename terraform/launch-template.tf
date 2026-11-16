@@ -18,7 +18,7 @@ resource "aws_launch_template" "database" {
     }
   }
 
-  iam_instance_profile {
-    name = aws_iam_instance_profile.database.name
-  }
+  #iam_instance_profile {
+  #  name = aws_iam_instance_profile.database.name
+  #}
 }
