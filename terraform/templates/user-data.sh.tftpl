@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y mariadb-server mariadb-backup galera-4 rsync
+systemctl disable --now mariadb
+
+# Galera is enabled only after the coordinator supplies actual peer addresses.
+cat > /etc/mysql/mariadb.conf.d/60-galera.cnf <<'GALERA_CONFIG'
+${galera_config}
+GALERA_CONFIG

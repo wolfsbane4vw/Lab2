@@ -1,8 +1,8 @@
 # Lab2 — MariaDB Galera on AWS
 
-Terraform provisions three Ubuntu instances through an Auto Scaling Group using the Lab1 AMI. Laptop scripts configure and start a MariaDB Galera cluster over SSH, check its health, and test data replication.
+Terraform provisions three Ubuntu instances through an Auto Scaling Group using the Lab1 AMI. Its user_data installs MariaDB/Galera and writes common settings. A laptop utility supplies node identities and peer addresses, initializes or joins the cluster over SSH, and separate utilities check health and replication.
 
-The ASG allows up to five instances, but load balancing, automatic scaling/joining, controlled scale-in, and recovery automation are still pending. See [plan.md](plan.md) for the roadmap; some progress notes there may lag behind the code.
+The ASG allows up to five instances, but load balancing, automatic scaling/joining, controlled scale-in, and recovery automation are still pending. See [plan.md](plan.md) for the remaining stages.
 
 ## Requirements
 
@@ -31,8 +31,6 @@ Find your public IPv4 with `curl -4 https://checkip.amazonaws.com`. Keep `ssh_ci
 ```bash
 bash scripts/create-test-key.sh
 export AWS_PROFILE=taltech
-export AWS_REGION=eu-north-1
-export AWS_DEFAULT_REGION=eu-north-1
 aws sso login --profile taltech
 
 terraform -chdir=terraform fmt
@@ -44,7 +42,7 @@ terraform -chdir=terraform apply tfplan
 
 The key script creates `terraform/database-key.pem` and `.pem.pub`, preserving existing files. Keep both. State, keys, real variable files, and plans are Git-ignored; retain local state for future updates and cleanup.
 
-Regenerate `tfplan` after code changes or a failed plan. Updating a launch template does not automatically update existing instances or rerun their startup scripts.
+Regenerate `tfplan` after code changes or a failed plan. Updating the launch template affects future instances; it does not replace existing instances or rerun startup scripts. Existing healthy clusters can continue running. New setup expects the common configuration supplied by the updated template.
 
 ## Initialize a fresh cluster
 
@@ -53,12 +51,18 @@ Run this sequence only on fresh nodes with MariaDB stopped. **Bootstrap once, on
 ```bash
 bash scripts/nodes/discover-nodes.sh
 bash scripts/nodes/check-nodes.sh installation
-bash scripts/nodes/configure-cluster.sh
-bash scripts/nodes/bootstrap-cluster.sh
-bash scripts/nodes/join-cluster.sh
+bash scripts/nodes/cluster.sh init
 ```
 
-Discovery uses your laptop's AWS login. Configuration writes each node's Galera settings; bootstrap selects the first node by sorted instance ID. Joining starts the remaining members normally. All three should report `Primary`, `Synced`, `ON`, size `3`, and the same cluster UUID.
+`init` checks all nodes for previous Galera state before configuring any, bootstraps one node, then starts the others. It is for fresh setup, not recovery. It waits for readiness and runs the cluster checks afterward.
+
+To add fresh instances to an already healthy cluster:
+
+```bash
+bash scripts/nodes/cluster.sh join
+```
+
+`join` requires a healthy existing member and never bootstraps. It configures stopped fresh nodes and starts them normally. Running members are retained. It does not recover stopped nodes with previous Galera state. Both operations accept an optional ASG name as their second argument.
 
 ## Check a running cluster
 
@@ -71,12 +75,7 @@ Health checks separate node failures from size mismatches. Installation mode che
 
 The replication test writes a uniquely identified row on one node and reads it from every node. It retains its dedicated `lab2_replication_test` database/table and test rows.
 
-Health checks use saved Terraform IP outputs. Refresh them after instances change:
-
-```bash
-terraform -chdir=terraform apply -refresh-only
-terraform -chdir=terraform output database_public_ips
-```
+All node utilities now discover current instances directly from AWS using your laptop login. No Terraform refresh is needed for their address lists. Terraform outputs remain available as saved snapshots.
 
 For manual access, replace `PUBLIC_IP` with a node address:
 
@@ -89,8 +88,9 @@ sudo tail -n 100 /var/log/cloud-init-output.log
 ## Script layout
 
 - `scripts/`: key generation, Terraform validation, and planning.
-- `scripts/nodes/`: laptop-side discovery, installation checks, and configuration coordination.
-- `scripts/provisioning/`: scripts executed on EC2 nodes; do not run them locally.
+- `terraform/templates/`: startup script and common Galera configuration supplied by Terraform.
+- `scripts/lib/nodes.sh`: shared discovery, validation, and SSH helpers.
+- `scripts/nodes/`: `cluster.sh init|join`, `check-nodes.sh`, `test-replication.sh`, and the discovery command.
 
 IAM-based node discovery is disabled because of student-account permissions. Discovery and SSH coordination run on your laptop; no personal AWS credentials are copied to nodes. Any earlier IAM resources removed from state still need separate cleanup.
 

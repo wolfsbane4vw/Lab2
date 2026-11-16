@@ -2,14 +2,14 @@
 
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-key_path="$project_dir/terraform/database-key.pem"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/nodes.sh"
 
 mode="${1:-installation}"
 expected_size="${2:-3}"
+asg_name="${3:-lab2-database}"
 
 if [[ "$mode" != "installation" && "$mode" != "cluster" ]]; then
-  echo "Usage: bash check-nodes.sh [installation|cluster] [expected-size]" >&2
+  echo "Usage: bash check-nodes.sh [installation|cluster] [expected-size] [asg-name]" >&2
   exit 1
 fi
 
@@ -18,11 +18,9 @@ if [[ ! "$expected_size" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
-node_ips="$(
-  terraform -chdir="$project_dir/terraform" output \
-    -json database_public_ips |
-    jq -er 'if length == 0 then error("No node IPs found") else .[] end'
-)"
+nodes="$(discover_nodes "$asg_name")"
+require_nodes "$nodes"
+node_ips="$(jq -r '.[].public_ip' <<< "$nodes")"
 
 failed=0
 checked=0
@@ -31,17 +29,12 @@ summary=""
 observed_sizes=""
 observed_uuids=""
 
-# These addresses are a saved snapshot; refresh Terraform outputs after scaling.
+# Discovery is live, so replacement and scale-out nodes are included.
 while IFS= read -r ip; do
   checked=$((checked + 1))
   echo "Checking $ip..."
 
-  if node_output="$(ssh \
-    -i "$key_path" \
-    -o BatchMode=yes \
-    -o ConnectTimeout=10 \
-    -o StrictHostKeyChecking=accept-new \
-    "ubuntu@$ip" 'bash -s --' "$mode" <<'REMOTE' 2>&1
+  if node_output="$(ssh_script "$ip" "$mode" <<'REMOTE' 2>&1
 set -euo pipefail
 
 mode="$1"
@@ -202,7 +195,7 @@ else
   echo "Cluster size and identity: NOT CHECKED — no node passed its checks."
 fi
 
-echo "Addresses come from saved Terraform outputs; refresh them after instances change."
+echo "Addresses were discovered live from ASG $asg_name."
 
 if (( failed > 0 || size_mismatches > 0 || identity_mismatch > 0 )); then
   exit 1

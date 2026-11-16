@@ -1,33 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-key_path="$project_dir/terraform/database-key.pem"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/nodes.sh"
 
 asg_name="${1:-lab2-database}"
-nodes="$(bash "$project_dir/scripts/nodes/discover-nodes.sh" "$asg_name")"
-
-if ! jq -e '
-  length >= 3 and
-  all(.[]; .instance_id != null and .public_ip != null)
-' <<< "$nodes" > /dev/null; then
-  echo "Expected at least three nodes with IDs and public IPs." >&2
-  exit 1
-fi
-
-ssh_sql() {
-  local ip="$1"
-  local sql="$2"
-
-  ssh \
-    -n \
-    -i "$key_path" \
-    -o BatchMode=yes \
-    -o ConnectTimeout=10 \
-    -o StrictHostKeyChecking=accept-new \
-    "ubuntu@$ip" \
-    "sudo -n mariadb --batch --skip-column-names --execute=\"$sql\""
-}
+nodes="$(discover_nodes "$asg_name")"
+require_nodes "$nodes" 3
 
 writer_ip="$(jq -r 'sort_by(.instance_id) | .[0].public_ip' <<< "$nodes")"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
