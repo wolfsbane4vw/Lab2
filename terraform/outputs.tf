@@ -22,3 +22,9 @@ output "database_public_ips" {
   description = "Public IP addresses of running database ASG instances"
   value       = data.aws_instances.database.public_ips
 }
+
+output "database_endpoint" {
+  description = "NLB hostname for MariaDB connections on port 3306"
+  value       = aws_lb.database.dns_name
+}
+

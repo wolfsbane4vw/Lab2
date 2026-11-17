@@ -2,11 +2,13 @@
 
 Terraform provisions three Ubuntu instances through an Auto Scaling Group using the Lab1 AMI. Its user_data installs MariaDB/Galera and writes common settings. A laptop utility supplies node identities and peer addresses, initializes or joins the cluster over SSH, and separate utilities check health and replication.
 
-The ASG allows up to five instances, but load balancing, automatic scaling/joining, controlled scale-in, and recovery automation are still pending. See [plan.md](plan.md) for the remaining stages.
+An internet-facing Network Load Balancer (NLB) forwards TCP port 3306 to ASG instances. The ASG allows up to five instances; automatic scaling/joining, controlled scale-in, and recovery automation are still pending.
+
+Terraform manages AWS infrastructure. After deployment, run the utility scripts to initialize the fresh cluster, configure the database client account, and verify health and replication. Run Terraform again when changing infrastructure; database operations use the scripts below.
 
 ## Requirements
 
-- Terraform `>= 1.5, < 2.0`, AWS CLI v2, Bash, OpenSSH, and `jq`.
+- Terraform `>= 1.5, < 2.0`, AWS CLI v2, Bash, OpenSSH, OpenSSL, and `jq`.
 - AWS lab access, the Lab1 Ubuntu x86_64 AMI in the same account/region, and a default VPC with internet-connected default subnets. Three-AZ placement requires subnets in three AZs.
 - All commands below run from the **Lab2 project root**. You run AWS and SSH commands yourself.
 
@@ -75,6 +77,30 @@ Health checks separate node failures from size mismatches. Installation mode che
 
 The replication test writes a uniquely identified row on one node and reads it from every node. It retains its dedicated `lab2_replication_test` database/table and test rows.
 
+## Configure the database client account
+
+After initializing a fresh cluster, run:
+
+```bash
+bash scripts/nodes/setup-client.sh
+```
+
+The script checks cluster health, prompts for a password twice without displaying it, and creates or updates `lab2_client` through SSH on one node. Galera replicates the account to the other members. The account receives `SELECT` access to `lab2_replication_test`; run the replication test above to create that database and its test rows.
+
+The password is not saved in project files or Terraform state. Rerunning the script sets the account password to the value entered. Run it after rebuilding the entire cluster or to change the password; joining nodes receive the account through Galera without rerunning setup.
+
+## Database load balancer
+
+Get the database hostname with:
+
+```bash
+terraform -chdir=terraform output -raw database_endpoint
+```
+
+Connect on port 3306. The NLB security group restricts client access to `ssh_cidr`, and the ASG automatically registers and deregisters its instances. TCP health checks verify that port 3306 accepts connections; use `check-nodes.sh cluster` separately to verify Galera synchronization and membership. Client connection testing through the NLB is still pending.
+
+## Node discovery and manual access
+
 All node utilities now discover current instances directly from AWS using your laptop login. No Terraform refresh is needed for their address lists. Terraform outputs remain available as saved snapshots.
 
 For manual access, replace `PUBLIC_IP` with a node address:
@@ -90,7 +116,7 @@ sudo tail -n 100 /var/log/cloud-init-output.log
 - `scripts/`: key generation, Terraform validation, and planning.
 - `terraform/templates/`: startup script and common Galera configuration supplied by Terraform.
 - `scripts/lib/nodes.sh`: shared discovery, validation, and SSH helpers.
-- `scripts/nodes/`: `cluster.sh init|join`, `check-nodes.sh`, `test-replication.sh`, and the discovery command.
+- `scripts/nodes/`: cluster initialization/joining, client account setup, health and replication checks, and discovery.
 
 IAM-based node discovery is disabled because of student-account permissions. Discovery and SSH coordination run on your laptop; no personal AWS credentials are copied to nodes. Any earlier IAM resources removed from state still need separate cleanup.
 

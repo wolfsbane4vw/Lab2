@@ -20,6 +20,14 @@ resource "aws_security_group" "database" {
   }
 
   ingress {
+    description     = "MariaDB through the NLB"
+    from_port       = 3306
+    to_port         = 3306
+    protocol        = "tcp"
+    security_groups = [aws_security_group.load_balancer.id]
+  }
+
+  ingress {
     description = "Galera replication TCP"
     from_port   = 4567
     to_port     = 4567
@@ -58,3 +66,26 @@ resource "aws_security_group" "database" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
+
+resource "aws_security_group" "load_balancer" {
+  name        = "${var.project_name}-nlb"
+  description = "MariaDB access through the load balancer"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    description = "MariaDB from my IP"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = [var.ssh_cidr]
+  }
+
+  egress {
+    description = "MariaDB traffic to database nodes"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.default.cidr_block]
+  }
+}
+
