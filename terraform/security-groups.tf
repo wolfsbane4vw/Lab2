@@ -73,11 +73,12 @@ resource "aws_security_group" "load_balancer" {
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    description = "MariaDB from my IP"
+    description = "MariaDB from the Python test client"
     from_port   = 3306
     to_port     = 3306
     protocol    = "tcp"
-    cidr_blocks = [var.ssh_cidr]
+    cidr_blocks = ["${aws_instance.test_client.public_ip}/32"]
+
   }
 
   egress {
@@ -89,3 +90,23 @@ resource "aws_security_group" "load_balancer" {
   }
 }
 
+resource "aws_security_group" "test_client" {
+  name        = "${var.project_name}-test-client"
+  description = "SSH access to the Python database test client"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    description = "SSH from my IP"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.ssh_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}

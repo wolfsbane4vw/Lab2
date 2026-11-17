@@ -58,3 +58,46 @@ ssh_sql() {
   local sql="$2"
   ssh_node "$ip" "sudo -n timeout 15 mariadb --batch --skip-column-names --execute=\"$sql\""
 }
+
+
+wait_for_ssh() {
+  local ip="$1"
+  local attempt
+
+  echo "Waiting for SSH on $ip..."
+
+  for attempt in {1..60}; do
+    if ssh_node "$ip" true 2>/dev/null; then
+      echo "SSH ready on $ip"
+      return 0
+    fi
+
+    sleep 5
+  done
+
+  echo "SSH did not become available on $ip after 60 attempts." >&2
+  return 1
+}
+
+wait_for_installation() {
+  local ip="$1"
+  echo "Waiting for installation on $ip..."
+
+  ssh_script "$ip" <<'REMOTE'
+set -euo pipefail
+
+timeout 600 cloud-init status --wait
+
+for package in mariadb-server mariadb-backup galera-4 rsync; do
+  status="$(
+    dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true
+  )"
+
+  if [[ "$status" != "install ok installed" ]]; then
+    echo "Required package is missing: $package" >&2
+    exit 1
+  fi
+done
+REMOTE
+}
+

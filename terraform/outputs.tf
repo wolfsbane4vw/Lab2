@@ -28,3 +28,9 @@ output "database_endpoint" {
   value       = aws_lb.database.dns_name
 }
 
+output "test_client_public_ip" {
+  description = "Public IP of the Python test client"
+  value       = aws_instance.test_client.public_ip
+}
+
+

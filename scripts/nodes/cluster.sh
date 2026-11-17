@@ -12,6 +12,13 @@ fi
 
 nodes="$(discover_nodes "$asg_name")"
 require_nodes "$nodes" 3
+node_ips="$(jq -r '.[].public_ip' <<< "$nodes")"
+
+while IFS= read -r ip; do
+  wait_for_ssh "$ip"
+  wait_for_installation "$ip"
+done <<< "$node_ips"
+
 rows="$(jq -r '.[] | [.instance_id, .private_ip, .public_ip] | @tsv' <<< "$nodes")"
 seed_ips="$(jq -r 'map(.private_ip) | join(",")' <<< "$nodes")"
 
@@ -110,10 +117,26 @@ else
 fi
 
 while IFS=$'\t' read -r node_id private_ip public_ip; do
-  if [[ "$action" == "join" ]] && ! ssh_node "$public_ip" sudo -n systemctl is-active --quiet mariadb; then
-    check_fresh "$public_ip"
-    configure_node "$public_ip" "$node_id" "$private_ip"
+  if [[ "$action" == "join" ]]; then
+    if service_state="$(ssh_node "$public_ip" systemctl is-active mariadb)"; then
+      if [[ "$service_state" != "active" ]]; then
+        echo "Unexpected MariaDB state on $node_id: $service_state" >&2
+        exit 1
+      fi
+    else
+      status=$?
+
+      if (( status != 3 )) || [[ "$service_state" != "inactive" ]]; then
+        echo "Cannot safely join $node_id: could not confirm MariaDB is inactive." >&2
+        echo "Exit status: $status; service state: ${service_state:-unknown}" >&2
+        exit 1
+      fi
+
+      check_fresh "$public_ip"
+      configure_node "$public_ip" "$node_id" "$private_ip"
+    fi
   fi
+
   echo "Starting/checking $node_id"
   ssh_node "$public_ip" sudo -n systemctl start mariadb
   wait_ready "$public_ip"

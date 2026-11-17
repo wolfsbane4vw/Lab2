@@ -1,129 +1,101 @@
 # Lab2 — MariaDB Galera on AWS
 
-Terraform provisions three Ubuntu instances through an Auto Scaling Group using the Lab1 AMI. Its user_data installs MariaDB/Galera and writes common settings. A laptop utility supplies node identities and peer addresses, initializes or joins the cluster over SSH, and separate utilities check health and replication.
+Terraform provisions a three-node ASG from the Lab1 AMI, a Network Load Balancer (NLB), and a separate EC2 instance running a small Python test client. Startup scripts install MariaDB/Galera; laptop utilities initialize the cluster and join new members.
 
-An internet-facing Network Load Balancer (NLB) forwards TCP port 3306 to ASG instances. The ASG allows up to five instances; automatic scaling/joining, controlled scale-in, and recovery automation are still pending.
+Tested: three-to-five scale-out with watcher-driven joining, controlled five-to-three scale-in, replication, and SQL access through the NLB. The simulated-load metric and automatic scaling policy are the next step. Full-outage recovery and durable backups are not implemented.
 
-Terraform manages AWS infrastructure. After deployment, run the utility scripts to initialize the fresh cluster, configure the database client account, and verify health and replication. Run Terraform again when changing infrastructure; database operations use the scripts below.
+## Requirements and deployment
 
-## Requirements
+Use Terraform `>= 1.5, < 2.0`, AWS CLI v2, Bash, OpenSSH, OpenSSL, and `jq`. Database software and the Python test client run on AWS; no database client is needed on the laptop. Run commands from the project root.
 
-- Terraform `>= 1.5, < 2.0`, AWS CLI v2, Bash, OpenSSH, OpenSSL, and `jq`.
-- AWS lab access, the Lab1 Ubuntu x86_64 AMI in the same account/region, and a default VPC with internet-connected default subnets. Three-AZ placement requires subnets in three AZs.
-- All commands below run from the **Lab2 project root**. You run AWS and SSH commands yourself.
-
-## Configure and deploy
-
-For first-time setup, copy the example and edit the values. Keep an existing configuration if already set up:
-
-```bash
-cp -i terraform/terraform.tfvars.example terraform/terraform.tfvars
-```
-
-```hcl
-project_name  = "lab2"
-aws_region    = "eu-north-1"
-ami_id        = "ami-REPLACE_WITH_LAB1_AMI_ID"
-instance_type = "t3.small"
-ssh_cidr      = "YOUR_PUBLIC_IPV4/32"
-```
-
-Find your public IPv4 with `curl -4 https://checkip.amazonaws.com`. Keep `ssh_cidr` current.
+For first-time setup, copy `terraform/terraform.tfvars.example` to `terraform/terraform.tfvars`. Set the Lab1 AMI ID, region, and your public IPv4 `/32` in `ssh_cidr`. Keep existing variable and key files when already configured. The default VPC/subnets must provide internet access for package installation.
 
 ```bash
 bash scripts/create-test-key.sh
 export AWS_PROFILE=taltech
 aws sso login --profile taltech
-
 terraform -chdir=terraform fmt
 bash scripts/validate.sh
 bash scripts/plan.sh
-# Review the successful plan before applying; this starts billable instances.
+# Review the plan before applying; AWS resources incur charges.
 terraform -chdir=terraform apply tfplan
 ```
 
-The key script creates `terraform/database-key.pem` and `.pem.pub`, preserving existing files. Keep both. State, keys, real variable files, and plans are Git-ignored; retain local state for future updates and cleanup.
+Keep the SSH key pair and Terraform state. Regenerate the plan after configuration changes. Launch-template changes affect future instances; they do not rerun startup on existing database nodes. ASG desired capacity is ignored by Terraform so runtime scaling can manage it.
 
-Regenerate `tfplan` after code changes or a failed plan. Updating the launch template affects future instances; it does not replace existing instances or rerun startup scripts. Existing healthy clusters can continue running. New setup expects the common configuration supplied by the updated template.
+## Fresh cluster setup
 
-## Initialize a fresh cluster
-
-Run this sequence only on fresh nodes with MariaDB stopped. **Bootstrap once, on one node only. Do not rerun bootstrap to restart or recover an existing cluster.**
+**Run init only on fresh instances, never to restart or recover an existing cluster.**
 
 ```bash
-bash scripts/nodes/discover-nodes.sh
 bash scripts/nodes/check-nodes.sh installation
 bash scripts/nodes/cluster.sh init
-```
-
-`init` checks all nodes for previous Galera state before configuring any, bootstraps one node, then starts the others. It is for fresh setup, not recovery. It waits for readiness and runs the cluster checks afterward.
-
-To add fresh instances to an already healthy cluster:
-
-```bash
-bash scripts/nodes/cluster.sh join
-```
-
-`join` requires a healthy existing member and never bootstraps. It configures stopped fresh nodes and starts them normally. Running members are retained. It does not recover stopped nodes with previous Galera state. Both operations accept an optional ASG name as their second argument.
-
-## Check a running cluster
-
-```bash
-bash scripts/nodes/check-nodes.sh cluster 3
 bash scripts/nodes/test-replication.sh
-```
-
-Health checks separate node failures from size mismatches. Installation mode checks startup and packages regardless of service state. Use `cluster 5` only when expecting five members; checking does not scale the group.
-
-The replication test writes a uniquely identified row on one node and reads it from every node. It retains its dedicated `lab2_replication_test` database/table and test rows.
-
-## Configure the database client account
-
-After initializing a fresh cluster, run:
-
-```bash
 bash scripts/nodes/setup-client.sh
+bash scripts/nodes/test-load-balancer.sh
 ```
 
-The script checks cluster health, prompts for a password twice without displaying it, and creates or updates `lab2_client` through SSH on one node. Galera replicates the account to the other members. The account receives `SELECT` access to `lab2_replication_test`; run the replication test above to create that database and its test rows.
+`init` checks all nodes before changes, bootstraps one member, and joins the others. Account setup prompts for a password and creates `lab2_client` with SELECT access to the test database. Run it again after rebuilding the entire cluster or to change the password; joining nodes inherit the account.
 
-The password is not saved in project files or Terraform state. Rerunning the script sets the account password to the value entered. Run it after rebuilding the entire cluster or to change the password; joining nodes receive the account through Galera without rerunning setup.
-
-## Database load balancer
-
-Get the database hostname with:
+## Checks
 
 ```bash
-terraform -chdir=terraform output -raw database_endpoint
+bash scripts/nodes/check-nodes.sh cluster 3  # Use 5 for a five-node cluster.
+bash scripts/nodes/test-replication.sh
+bash scripts/nodes/test-load-balancer.sh
 ```
 
-Connect on port 3306. The NLB security group restricts client access to `ssh_cidr`, and the ASG automatically registers and deregisters its instances. TCP health checks verify that port 3306 accepts connections; use `check-nodes.sh cluster` separately to verify Galera synchronization and membership. Client connection testing through the NLB is still pending.
+Health checks verify expected membership, matching cluster UUIDs, and Primary/Synced/ready/connected status. Replication testing retains its test rows. The NLB test prompts for the client password and runs Python on the AWS test instance to read test data through the NLB. NLB TCP health checks alone do not verify Galera synchronization.
 
-## Node discovery and manual access
+## Automatic joining: laptop watcher
 
-All node utilities now discover current instances directly from AWS using your laptop login. No Terraform refresh is needed for their address lists. Terraform outputs remain available as saved snapshots.
+The student account cannot create the IAM role/profile needed by our AWS-hosted discovery approach, or a dedicated IAM user. The watcher therefore uses the laptop's existing AWS login to discover ASG instances and SSH to configure them. No personal AWS credentials are copied to nodes.
 
-For manual access, replace `PUBLIC_IP` with a node address:
+After initial cluster setup, start the watcher in a separate terminal:
 
 ```bash
-ssh -i terraform/database-key.pem ubuntu@PUBLIC_IP
-# On the node, inspect startup failures with:
-sudo tail -n 100 /var/log/cloud-init-output.log
+bash scripts/nodes/watch-cluster.sh
 ```
 
-## Script layout
+Keep the laptop awake, the terminal running, and the AWS login valid. The watcher checks membership every 30 seconds and joins new instances after waiting for SSH, cloud-init, and package installation. It never bootstraps and stops on errors. Run only one watcher; avoid running manual join operations alongside it. Stop it with Ctrl+C.
 
-- `scripts/`: key generation, Terraform validation, and planning.
-- `terraform/templates/`: startup script and common Galera configuration supplied by Terraform.
-- `scripts/lib/nodes.sh`: shared discovery, validation, and SSH helpers.
-- `scripts/nodes/`: cluster initialization/joining, client account setup, health and replication checks, and discovery.
+To demonstrate scale-out, leave the watcher running and run this in another terminal:
 
-IAM-based node discovery is disabled because of student-account permissions. Discovery and SSH coordination run on your laptop; no personal AWS credentials are copied to nodes. Any earlier IAM resources removed from state still need separate cleanup.
+```bash
+aws autoscaling set-desired-capacity \
+  --auto-scaling-group-name lab2-database \
+  --desired-capacity 5 \
+  --profile taltech \
+  --region eu-north-1
+```
 
-## Cleanup
+Wait for the watcher to verify five members, then run the replication and NLB tests. Capacity changes are currently explicit; CloudWatch-triggered scaling is not implemented yet.
+
+## Controlled scale-in
+
+**Stop the watcher first.** Run:
+
+```bash
+bash scripts/nodes/scale-in.sh
+```
+
+Each successful run removes one node, down to a minimum of three. It checks health, selects a node from an AZ with spare capacity, drains NLB connections, stops MariaDB, verifies the survivors, and terminates the selected instance while reducing desired capacity.
+
+For five-to-three, run it twice, proceeding to the second run only after the first succeeds. Test replication and NLB access afterward. If scale-in fails, inspect the error before retrying: the candidate may already be drained or stopped. Do not reduce desired capacity directly for scale-in.
+
+## Files and cleanup
+
+- `terraform/`: AWS resources and startup templates.
+- `scripts/lib/nodes.sh`: shared discovery, SSH, and readiness helpers.
+- `scripts/nodes/`: cluster setup, watcher, checks, account setup, and scale-in.
+- `scripts/client/test_database.py`: read-only Python test through the NLB.
+
+For explicit joining without the watcher, use `bash scripts/nodes/cluster.sh join`. Optional address inspection: `bash scripts/nodes/discover-nodes.sh`.
+
+Stop the watcher before cleanup:
 
 ```bash
 terraform -chdir=terraform destroy
 ```
 
-Review the deletions and retain state until cleanup succeeds. This removes tracked Lab2 infrastructure, not the Lab1 AMI, default VPC/subnets, local keys, or IAM resources previously removed from state. If deletion fails, inspect the reported dependency or permission error rather than deleting state files.
+Review deletions and retain state until cleanup succeeds. Earlier IAM resources removed from state may still need teacher-assisted cleanup; this destroy will not remove them.

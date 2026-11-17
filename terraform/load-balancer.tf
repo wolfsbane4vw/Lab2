@@ -8,11 +8,14 @@ resource "aws_lb" "database" {
 }
 
 resource "aws_lb_target_group" "database" {
-  name        = "${var.project_name}-database"
-  port        = 3306
-  protocol    = "TCP"
-  target_type = "instance"
-  vpc_id      = data.aws_vpc.default.id
+  name                   = "${var.project_name}-database"
+  port                   = 3306
+  protocol               = "TCP"
+  target_type            = "instance"
+  vpc_id                 = data.aws_vpc.default.id
+  deregistration_delay   = 120
+  connection_termination = true
+
 
   health_check {
     protocol = "TCP"

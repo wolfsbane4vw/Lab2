@@ -1,91 +1,74 @@
 # Lab2 implementation plan
 
-## Scope
+## Goal and working approach
 
-Build a MariaDB Galera cluster in AWS using Terraform and utility/startup scripts. Reuse the Ubuntu base AMI built in Lab1. No frontend or backend application is required.
+Provision servers from the Lab1 AMI, a launch template, an ASG, an NLB, and MariaDB Galera using Terraform and necessary utility scripts. Demonstrate three-to-five scale-out, replication, database access through the NLB, and controlled return to three.
 
-The cluster starts with three database nodes and scales out to five when simulated load increases. Use a launch template, one Auto Scaling Group (ASG), and a Network Load Balancer (NLB).
+- The user implements changes with step-by-step guidance. Ask before editing unless explicitly asked to apply changes. Updating documentation does not authorize infrastructure edits.
+- The user runs AWS authentication, deployment, SSH, and live tests. Do not access credentials or call AWS without explicit permission.
+- Keep code and README simple; follow the existing file organization and sibling demos.
+- The solution uses Terraform, Bash, and a tiny Python test client. Ansible was discarded; ClusterControl was ruled out because the required features need licensing.
+- External Terraform modules are an optional bonus. None is currently used.
 
-## Assignment and design
+## Completed and tested
 
-- Provision servers, an Auto Scaling Group, and a load balancer using Terraform in AWS.
-- Reference the AMI built in Lab1 from the launch template.
-- Use cloud-init/user_data to configure clustered software and coordinate new nodes joining.
-- Publish the Terraform code and utility scripts or deployment instructions on GitHub and present a short live demo.
-- Set ASG minimum and initial desired capacity to three, and maximum capacity to five. Spread instances across three Availability Zones.
-- Simulate load with a custom CloudWatch metric and use a scaling policy to increase capacity from three to five. This demonstrates scaling without requiring a large database workload.
-- Three database nodes allow the two survivors to retain quorum after one unexpected failure. Two nodes can run, but cannot provide that same failure tolerance on their own.
-- Additional Galera nodes can add read capacity; write throughput does not automatically grow with node count because writes are replicated across the cluster.
-- Develop controlled scale-in after successful scale-out. Initial work must prevent uncoordinated automatic scale-in.
+The following live results were confirmed by the user, not independently inspected in AWS:
 
-## Working approach
+1. **Infrastructure and initial cluster**
+   - Lab1 AMI lookup, launch template, default VPC/subnets, SSH key registration, and security groups.
+   - ASG minimum/initial desired capacity three, maximum five; Terraform ignores runtime desired-capacity changes.
+   - Startup installs MariaDB/Galera and common settings. `cluster.sh init` supplies identity/peers and bootstraps one fresh member once.
+   - Fresh deployment, three synchronized members, matching cluster UUIDs, and replication passed.
+2. **Database access and NLB test**
+   - TCP/3306 NLB listener and target group attached to the ASG.
+   - `setup-client.sh` creates/updates the replicated SELECT-only `lab2_client` account.
+   - A separate EC2 test instance runs `scripts/client/test_database.py` using PyMySQL. No database client is installed on the laptop.
+   - `test-load-balancer.sh` obtains Terraform outputs, connects by SSH, waits for startup, and runs the Python query through the NLB.
+   - The public NLB permits the test instance's public IPv4 /32. Client-IP preservation remains at its default; the earlier self-connection workaround was removed.
+   - SQL access through the NLB passed at three, four, and five members. The test verifies a connection, not distribution across all members.
+3. **Scale-out and automatic joining**
+   - Explicit three-to-five ASG growth and `cluster.sh join` passed, followed by health, UUID, replication, and NLB checks.
+   - Shared helpers wait for SSH and cloud-init/package readiness. Join distinguishes SSH errors from an inactive MariaDB service and never bootstraps.
+   - `watch-cluster.sh` polls membership every 30 seconds and invokes join on initial startup or changed instance IDs. It stops on discovery/join errors.
+   - After controlled scale-in, the watcher successfully detected and joined new instances during another three-to-five scale-out without a manual join command.
+4. **Controlled scale-in**
+   - `scale-in.sh` removes one node per successful run, never below three.
+   - It requires stable ASG membership and healthy databases/targets, selects from an AZ with spare members, drains the NLB target, stops MariaDB, checks the survivors, and terminates that exact instance while decrementing desired capacity.
+   - Target-group deregistration delay is 120 seconds with connection termination enabled.
+   - The health checker supports excluding the stopped candidate and requires the exact expected number of remaining nodes.
+   - Five-to-four and four-to-three both passed, including replication and NLB access. Stop the watcher before scale-in; inspect failures before retrying because a candidate may already be drained or stopped.
 
-- Build and explain one stage at a time, keeping the configuration simple.
-- The user implements infrastructure changes with guidance. Edit project files only when explicitly requested or approved; updating this plan does not authorize infrastructure changes.
-- Ask before implementing the next stage unless it has already been approved.
-- The user runs AWS authentication, planning, deployment, and live checks. Do not access credentials or call external systems without explicit permission.
-- Use Lab1 and the sibling demos as local references.
+## Why the watcher runs on the laptop
 
-## Steps
+The student account could not obtain the IAM role/profile permissions needed by the proposed AWS-side discovery design, or create a dedicated IAM user. The laptop therefore uses its existing AWS login and SSH key for coordination; no personal AWS credentials are copied to instances. This is the accepted approach for the lab.
 
-1. **Verify the test instance**
-   - Completed: the user launched the test instance from the Lab1 AMI and successfully connected over SSH.
-   - Keep it temporarily as a reference for the AMI, instance settings, networking, and SSH access.
+The laptop must stay awake and authenticated with one watcher running. The databases and load balancer continue to run without it, but new nodes will not join automatically while it is unavailable. It is not a recovery service and must never invoke init automatically.
 
-2. **Define the launch template and ASG structure**
-   - Reuse the tested AMI, instance type, SSH key, and security group settings in a launch template.
-   - Choose subnets across three Availability Zones and configure restricted SSH and private cluster traffic.
-   - Define one ASG with minimum/desired capacity three and maximum capacity five.
-   - Agree on the startup/join procedure before deploying the full group. Developing the Terraform structure does not require launching unfinished database nodes.
-   - Do not expand the standalone aws_instance resources into the final cluster; the ASG will create the cluster instances.
-   - Keep the test instance separate until it can be removed. A launch template does not automatically adopt it into the ASG.
-   - Checkpoint: the local configuration describes the intended ASG and launch template, and the user reviews its Terraform plan.
+## Remaining work, in order
 
-3. **Install MariaDB Galera automatically**
-   - Supply startup scripts through Terraform user_data.
-   - Install the required packages and configure each node's identity and cluster settings.
-   - Decide how database storage and credentials will be managed.
-   - Define node identity for dynamically created instances rather than relying on fixed db1/db2/db3 instance resources.
-   - Checkpoint: a fresh node configures itself without manual package installation.
+1. **Next: simulated-load scaling trigger**
+   - Add a Terraform-defined custom CloudWatch metric alarm and scale-out policy that increases desired capacity to five. Keep scale-in explicit through `scale-in.sh`; do not add automatic downscaling.
+   - Add a small utility for publishing high/low simulated load with the laptop's existing AWS login. Confirm the required metric/alarm/scaling-policy permissions through user-run operations; do not create IAM resources.
+   - Test from three members with the watcher running: publish high load, observe the alarm launch two nodes, and verify five synchronized members, replication, and NLB access.
+   - Clear the high-load condition and wait for the alarm to return to OK before controlled scale-in, so the policy does not grow the group during removal.
+2. **Readiness and failure handling**
+   - TCP target health does not establish Galera readiness. Review how joining nodes are kept out of client traffic until Synced/ready, and test the chosen behavior. A separate Python HTTP readiness service was previously deferred to avoid premature complexity.
+   - Test one failed instance being replaced and the watcher joining its fresh replacement. This replacement path has not yet been demonstrated.
+   - Check continued SQL access during a single-node failure and readiness/timeout behavior on failed startup. Stop on unsafe states rather than repeatedly bootstrapping or restarting nodes.
+3. **Restart, storage, and recovery limits**
+   - Startup currently disables MariaDB; define and test normal reboot behavior separately from fresh initialization.
+   - Document data-volume lifetime, backup/persistence limits, and full-outage recovery. No durable backup or automated full-outage recovery strategy is implemented. Never recommend init for an existing/stopped cluster.
+4. **Optional bonus and submission**
+   - Consider an external Terraform NLB module only after the main demonstration works. Review resource/state migration before replacing existing blocks; a local module or provider alone is not the external-module bonus.
+   - Keep README/plan accurate, prepare a short demo, and publish required code/instructions when requested.
+   - Confirm whether the original temporary test instance remains and clean it up when no longer needed.
 
-4. **Form the cluster**
-   - Design discovery of existing members through their private addresses and coordinate the first bootstrap when ASG instances start concurrently.
-   - Bootstrap the initial cluster once, then join the other nodes.
-   - Define safe behavior for restarts, replacement nodes, and recovery after a full cluster outage.
-   - Avoid accidentally bootstrapping an independent cluster during a restart or replacement.
-   - Allow replacement and scale-out nodes to discover, join, and synchronize with the existing cluster.
-   - Checkpoint: three ASG-managed nodes report healthy membership and replicate database changes.
+## Resume next session
 
-5. **Add database load balancing**
-   - Design database routing and health checks before implementing them.
-   - Use a Network Load Balancer with a TCP listener and attach its target group to the ASG. An Application Load Balancer cannot carry MariaDB connections.
-   - Ensure health checks account for whether a node is ready to serve database requests, beyond an open TCP port.
-   - Checkpoint: database clients can connect through the load-balancing endpoint and unhealthy nodes stop receiving new connections.
+Last reported cluster size: five, after successful watcher-driven scale-out. Current AWS state and whether the watcher is still running must be confirmed by the user; do not assume resources still exist.
 
-6. **Demonstrate simulated load and scale-out**
-   - Add a utility script for the user to publish a simulated load metric to CloudWatch.
-   - Configure alarms and a scaling policy that grows the group from three to five nodes when the metric is high, respecting the maximum capacity.
-   - Account for startup and synchronization time so new nodes receive database connections only when ready.
-   - Ensure Terraform configuration and runtime scaling do not fight over desired capacity.
-   - Checkpoint: raising the metric triggers scaling, both new nodes join, and all five nodes replicate data and are eligible for traffic.
+1. Renew the laptop AWS login if needed.
+2. Check the expected current cluster size and run replication/NLB tests if state has changed or is uncertain. Do not rerun init on existing nodes.
+3. Start implementing the simulated-load alarm, scale-out policy, and metric-publishing utility. Safely return to three with the watcher stopped before testing the new trigger.
 
-7. **Implement controlled scale-in and test failures**
-   - Define how nodes stop receiving new connections, leave the cluster gracefully, and complete termination. Decide whether lifecycle hooks are needed.
-   - Return from five nodes to three using the agreed scale-in procedure while preserving quorum.
-   - Verify a failed instance is replaced and the replacement joins the existing cluster.
-   - Verify replication and database access through the load-balancing endpoint.
-   - Verify continued service after one node fails and safe recovery afterward.
-   - Check storage behavior and document the full-cluster recovery procedure in script comments or utility instructions.
-   - Remove temporary test resources once they are no longer needed.
-   - Checkpoint: the live demo shows three healthy nodes, scale-out to five, controlled return to three, and recovery after a node failure.
-
-## Current progress and next step
-
-- Terraform creates the ASG and supplies installation/common Galera settings through startup templates.
-- IAM profile/user creation is blocked by the student account. Discovery and coordination currently run on the laptop using its existing AWS session; no personal credentials are copied to nodes.
-- Shared helpers are in `scripts/lib/nodes.sh`. Use `cluster.sh init` only for fresh setup and `cluster.sh join` to add fresh nodes to an existing healthy cluster.
-- Health checks support installation and running-cluster modes, with separate size/identity checks. A replication test writes on one node and reads from every member.
-- Next: validate the refactored utilities, then add an NLB with a basic Terraform-defined TCP health check. Galera-aware load-balancer readiness can follow.
-- Automatic joining during scaling still needs a running laptop coordinator or a supported node-side discovery mechanism. Full outage recovery, persistent-storage strategy, client credentials, simulated-load policies, and controlled scale-in remain unfinished.
-- Earlier IAM resources removed from Terraform state still require separate cleanup. Commented IAM experiments have been removed from the project configuration.
-
+Earlier IAM role/profile resources were removed from Terraform state and may still exist in AWS. They need separate teacher-assisted cleanup; Terraform destroy will not remove them. Keep state and SSH keys until infrastructure cleanup succeeds.

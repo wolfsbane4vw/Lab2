@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update
+apt-get install -y python3 python3-pymysql
+
+install -d -m 0755 /opt/lab2-client
+
+base64 --decode > /opt/lab2-client/test_database.py <<'PYTHON'
+${client_script_base64}
+PYTHON
+
+chmod 0644 /opt/lab2-client/test_database.py

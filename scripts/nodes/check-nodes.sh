@@ -8,6 +8,8 @@ mode="${1:-installation}"
 expected_size="${2:-3}"
 asg_name="${3:-lab2-database}"
 
+excluded_id="${4:-}"
+
 if [[ "$mode" != "installation" && "$mode" != "cluster" ]]; then
   echo "Usage: bash check-nodes.sh [installation|cluster] [expected-size] [asg-name]" >&2
   exit 1
@@ -19,7 +21,32 @@ if [[ ! "$expected_size" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 nodes="$(discover_nodes "$asg_name")"
+
+# During scale-in, the stopped candidate still belongs to the ASG.
+if [[ -n "$excluded_id" ]]; then
+  if ! jq -e --arg id "$excluded_id" \
+    'any(.[]; .instance_id == $id)' <<< "$nodes" > /dev/null; then
+    echo "Excluded instance was not found in the discovered ASG nodes." >&2
+    exit 1
+  fi
+
+  nodes="$(
+    jq --arg id "$excluded_id" \
+      'map(select(.instance_id != $id))' <<< "$nodes"
+  )"
+fi
+
 require_nodes "$nodes"
+
+if [[ "$mode" == "cluster" ]]; then
+  discovered_size="$(jq 'length' <<< "$nodes")"
+
+  if (( discovered_size != expected_size )); then
+    echo "Expected $expected_size nodes to check, discovered $discovered_size." >&2
+    exit 1
+  fi
+fi
+
 node_ips="$(jq -r '.[].public_ip' <<< "$nodes")"
 
 failed=0
