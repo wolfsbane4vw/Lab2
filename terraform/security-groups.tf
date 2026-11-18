@@ -59,6 +59,14 @@ resource "aws_security_group" "database" {
     self        = true
   }
 
+  ingress {
+    description     = "Galera readiness checks from the NLB"
+    from_port       = 9200
+    to_port         = 9200
+    protocol        = "tcp"
+    security_groups = [aws_security_group.load_balancer.id]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -85,6 +93,13 @@ resource "aws_security_group" "load_balancer" {
     description = "MariaDB traffic to database nodes"
     from_port   = 3306
     to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.default.cidr_block]
+  }
+  egress {
+    description = "Galera readiness checks"
+    from_port   = 9200
+    to_port     = 9200
     protocol    = "tcp"
     cidr_blocks = [data.aws_vpc.default.cidr_block]
   }

@@ -8,18 +8,25 @@ resource "aws_lb" "database" {
 }
 
 resource "aws_lb_target_group" "database" {
-  name                   = "${var.project_name}-database"
-  port                   = 3306
-  protocol               = "TCP"
-  target_type            = "instance"
-  vpc_id                 = data.aws_vpc.default.id
-  deregistration_delay   = 120
+  name        = "${var.project_name}-database"
+  port        = 3306
+  protocol    = "TCP"
+  target_type = "instance"
+  vpc_id      = data.aws_vpc.default.id
+  # Short grace period for the lab's brief test queries.
+  deregistration_delay   = 30
   connection_termination = true
 
 
   health_check {
-    protocol = "TCP"
-    port     = "traffic-port"
+    protocol            = "HTTP"
+    port                = "9200"
+    path                = "/ready"
+    matcher             = "200"
+    interval            = 10
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
   }
 }
 

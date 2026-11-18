@@ -123,6 +123,8 @@ while IFS=$'\t' read -r node_id private_ip public_ip; do
         echo "Unexpected MariaDB state on $node_id: $service_state" >&2
         exit 1
       fi
+
+      echo "Existing node $node_id is running; checking Galera readiness."
     else
       status=$?
 
@@ -132,14 +134,27 @@ while IFS=$'\t' read -r node_id private_ip public_ip; do
         exit 1
       fi
 
+      echo "Checking whether stopped node $node_id is fresh..."
       check_fresh "$public_ip"
+
+      echo "Joining fresh node $node_id to the existing cluster..."
       configure_node "$public_ip" "$node_id" "$private_ip"
     fi
   fi
 
-  echo "Starting/checking $node_id"
   ssh_node "$public_ip" sudo -n systemctl start mariadb
+
+  echo "Waiting for Galera readiness on $node_id..."
   wait_ready "$public_ip"
+  echo "Node $node_id is Primary, Synced, ready and connected."
 done <<< "$rows"
 
 bash "$project_dir/scripts/nodes/check-nodes.sh" cluster "$(jq 'length' <<< "$nodes")" "$asg_name"
+
+echo "Enabling MariaDB startup at boot on verified cluster members..."
+
+while IFS= read -r ip; do
+  ssh_node "$ip" sudo -n systemctl enable mariadb
+done <<< "$node_ips"
+
+echo "MariaDB startup enabled."

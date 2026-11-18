@@ -2,11 +2,51 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
+# Keep automatic package maintenance out of this short-lived lab demo.
+# Stop timers only: an upgrade already running must finish normally.
+systemctl mask --now apt-daily.timer apt-daily-upgrade.timer
+systemctl mask apt-daily.service apt-daily-upgrade.service
+
+deadline=$((SECONDS + 1200))
+for unit in apt-daily.service apt-daily-upgrade.service; do
+  while true; do
+    state="$(systemctl show "$unit" --property=ActiveState --value)"
+    case "$state" in
+      inactive) break ;;
+      active|activating|deactivating|reloading) ;;
+      *) echo "Unexpected state for $unit: $state" >&2; exit 1 ;;
+    esac
+    if (( SECONDS >= deadline )); then
+      echo "Timed out waiting for package maintenance; leaving it running." >&2
+      exit 1
+    fi
+    echo "Waiting for $unit to finish..."
+    sleep 10
+  done
+done
+
 apt-get update
-apt-get install -y mariadb-server mariadb-backup galera-4 rsync
+apt-get -o DPkg::Lock::Timeout=600 install -y mariadb-server mariadb-backup galera-4 rsync python3
 systemctl disable --now mariadb
 
 # Galera is enabled only after the coordinator supplies actual peer addresses.
 cat > /etc/mysql/mariadb.conf.d/60-galera.cnf <<'GALERA_CONFIG'
 ${galera_config}
 GALERA_CONFIG
+
+install -d -m 0755 /opt/lab2
+
+base64 --decode > /opt/lab2/galera_readiness.py <<'READINESS_SCRIPT'
+${readiness_script_base64}
+READINESS_SCRIPT
+
+base64 --decode > /etc/systemd/system/galera-readiness.service <<'READINESS_SERVICE'
+${readiness_service_base64}
+READINESS_SERVICE
+
+chmod 0644 \
+  /opt/lab2/galera_readiness.py \
+  /etc/systemd/system/galera-readiness.service
+
+systemctl daemon-reload
+systemctl enable --now galera-readiness.service

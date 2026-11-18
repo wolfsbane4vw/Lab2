@@ -1,0 +1,13 @@
+[Unit]
+Description=MariaDB Galera readiness endpoint
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /opt/lab2/galera_readiness.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

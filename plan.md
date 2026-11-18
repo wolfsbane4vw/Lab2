@@ -72,3 +72,32 @@ Last reported cluster size: five, after successful watcher-driven scale-out. Cur
 3. Start implementing the simulated-load alarm, scale-out policy, and metric-publishing utility. Safely return to three with the watcher stopped before testing the new trigger.
 
 Earlier IAM role/profile resources were removed from Terraform state and may still exist in AWS. They need separate teacher-assisted cleanup; Terraform destroy will not remove them. Keep state and SSH keys until infrastructure cleanup succeeds.
+
+## Pre-submission code review assessment — 2026-11-18
+
+The current working files have a sensible structure for this lab. Strengths include explicit separation of initialization and joining, Galera health and cluster-identity checks, and controlled scale-in that drains connections, stops MariaDB, verifies survivors, then terminates the selected instance. The following assessment reflects local code review, not a live AWS test. Some earlier progress notes above are stale; reconcile them before submission.
+
+### Changes to prioritize
+
+1. **High: keep the watcher alive during instance replacement.** `scripts/nodes/watch-cluster.sh` requires at least three running instances on every poll. If one of three instances fails and discovery temporarily returns two, the watcher exits before the replacement arrives. This was reproduced with mocked discovery. Poll through a bounded replacement window, report degraded capacity, and join the fresh replacement when it becomes available. Keep the refusal to bootstrap automatically.
+2. **High: enforce the low-load condition inside standalone scale-in.** `scripts/nodes/scale-in.sh` never reads the CloudWatch alarm; only `scripts/demo-scaling.sh` waits for it to clear. Direct scale-in can therefore compete with the active scale-out policy. Require the alarm to be `OK` before draining and check again before termination. Refuse to proceed if the alarm is missing or cannot be read. This reduces the conflict risk but is not a lock against concurrent scaling activity.
+3. **Medium: define application-failure handling.** The ASG uses EC2 health checks, so an instance with failed MariaDB or readiness service can remain in the group while the NLB rejects it. The watcher only reacts to changed instance IDs. Either document this limitation explicitly or implement deliberate application-failure handling. Do not simply enable ELB-based replacement without coordinating slow joins and intentional shutdowns during scale-in. AWS behavior reference: https://docs.aws.amazon.com/autoscaling/ec2/userguide/health-checks-overview.html.
+4. **Medium: address stale peer addresses before claiming reliable reboot/rejoin.** `scripts/nodes/cluster.sh` writes seed IPs for fresh nodes but leaves existing running nodes' peer configuration unchanged. After enough replacements, a surviving node may have no reachable peer in its saved list when it restarts. Define a safe way to refresh peer configuration after membership changes and test reboot/rejoin after replacements. This is a code-derived risk, not a live reproduced failure. MariaDB reference: https://mariadb.com/docs/galera-cluster/reference/galera-cluster-system-variables.
+5. **Medium: make script configuration consistent with Terraform.** Scripts default separately to ASG `lab2-database`, profile `taltech`, and region `eu-north-1`. Changing Terraform's `project_name` or `aws_region` does not change these defaults. Prefer Terraform outputs for the ASG name and region, or clearly document the required script arguments and environment variables, including `AWS_PROFILE` and `AWS_REGION`.
+6. **Before submission: include all required source files and reconcile documentation.** At review time, essential files were untracked, including `terraform/cloudwatch.tf`, the readiness Python script/service, and scaling demo utilities. Ensure they are included in the submitted commit. Earlier sections of this plan still call implemented scaling/readiness features future work and describe a 120-second deregistration delay; the current code uses 30 seconds. Distinguish implemented behavior from behavior actually demonstrated live, and update the resume instructions accordingly.
+
+### Folder structure and naming
+
+- Keep `terraform/`, `terraform/templates/`, and `scripts/lib/`; more modules or directory layers are not necessary for this lab.
+- Consider renaming `scripts/create-test-key.sh` to `create-ssh-key.sh`, since the key also serves database nodes.
+- Consider renaming `scripts/nodes/setup-client.sh` to `configure-client-account.sh`, since it configures a database account rather than provisioning the client host.
+- Optionally move replication and NLB checks into `scripts/checks/` to distinguish checks from node lifecycle operations. Update all callers and README commands if files move.
+- Use one Terraform filename convention; `key_pair.tf` currently differs from the hyphenated filenames. Renaming a `.tf` file does not require renaming its resource blocks.
+
+### Verification and remaining evidence
+
+Local checks passed: Terraform formatting and validation, Bash syntax for all shell scripts, Python syntax, whitespace checks, and nine mocked readiness status/failure cases. A mocked watcher run confirmed that two discovered nodes cause it to exit. These checks do not establish live infrastructure resilience.
+
+No real AWS API calls, SSH connections, load-metric publishing, demo execution, or infrastructure changes were performed during this review. Source code was not changed by the review.
+
+Before submission, obtain live evidence for a complete three-to-five-to-three demo, a failed instance being replaced while the watcher remains running, SQL access during a single-node failure, and reboot/rejoin behavior. Keep full-outage recovery and durable-backup limitations explicit. The original assignment rubric was not available in the repository; confirm that simulated load and laptop-coordinated scale-in satisfy its automation requirements.

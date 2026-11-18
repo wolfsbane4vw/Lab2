@@ -10,9 +10,21 @@ def main():
         description="Test database access through the load balancer."
     )
     parser.add_argument("host", help="NLB hostname")
+    parser.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="Read the password from stdin instead of prompting",
+    )
     args = parser.parse_args()
 
-    password = getpass.getpass("Password for lab2_client: ")
+    if args.password_stdin:
+        password = sys.stdin.readline().removesuffix("\n")
+    else:
+        password = getpass.getpass("Password for lab2_client: ")
+
+    if not password:
+        print("FAIL: database password cannot be empty.", file=sys.stderr)
+        return 1
 
     try:
         with pymysql.connect(

@@ -18,3 +18,13 @@ resource "aws_autoscaling_group" "database" {
     ignore_changes = [desired_capacity]
   }
 }
+
+resource "aws_autoscaling_policy" "database_scale_out" {
+  name                   = "${var.project_name}-scale-out"
+  autoscaling_group_name = aws_autoscaling_group.database.name
+
+  policy_type        = "SimpleScaling"
+  adjustment_type    = "ExactCapacity"
+  scaling_adjustment = 5
+  cooldown           = 60
+}
